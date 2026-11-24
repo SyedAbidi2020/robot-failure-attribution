@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Why Retraining on Every Failure Doesn't Work | Robot Failure Attribution</title>
+<meta name="description" content="Manipulator robot failures come from four sources (perception, policy, hardware, contact) in five phases (reach, grasp, lift, move, place). Why they are hard to separate, and a diagnose-then-fix approach that sends only policy failures back to annotation and retraining.">
+<style>
+  :root {
+    --bg: #f7f7f3; --surface: #ffffff; --soft: #eceee8; --ink: #14294d; --ink-2: #4f5d6c; --line: #d9dcd5;
+    --accent: #0f6b6b; --accent-fill: rgba(15, 107, 107, 0.10); --warn: #b6562f; --warn-bg: #fbf1e3;
+    --per: #b6562f; --pol: #4a6ea9; --hw: #5b4fa3; --con: #2a7f4f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15191f; --surface: #1e242c; --soft: #27303a; --ink: #eef1f4; --ink-2: #bcc5cf; --line: #333d48;
+      --accent: #5cc4c0; --accent-fill: rgba(92, 196, 192, 0.12); --warn: #e68e68; --warn-bg: #33291a;
+      --per: #e68e68; --pol: #9db8e6; --hw: #b3a8f0; --con: #7fcf9f;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.62 "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif; }
+  a { color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .topbar { position: sticky; top: 0; z-index: 10; background: #14294d; }
+  .topbar-inner { max-width: 1080px; margin: 0 auto; padding: 0 16px; display: flex; align-items: center; gap: 20px; overflow-x: auto; }
+  .brand { color: #fff; font-weight: 700; white-space: nowrap; text-decoration: none; padding: 13px 0; }
+  nav { display: flex; gap: 2px; margin-left: auto; }
+  nav a, nav span { color: #d7e0ea; text-decoration: none; padding: 13px 11px; font-size: 15px; font-weight: 600; white-space: nowrap; }
+  nav a:hover { color: #fff; background: rgba(255, 255, 255, 0.09); }
+  nav a[aria-current] { color: #fff; box-shadow: inset 0 -3px 0 #5cc4c0; }
+  nav span.soon { color: #8a9bb0; font-weight: 500; }
+  main { max-width: 1080px; margin: 0 auto; padding: 0 16px 64px; }
+  section { scroll-margin-top: 60px; padding-top: 30px; }
+  h1, h2 { font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif; font-weight: 700; }
+  h1 { font-size: clamp(34px, 5.6vw, 54px); line-height: 1.08; margin: 0 0 14px; letter-spacing: -0.01em; max-width: 18em; }
+  h2 { font-size: clamp(26px, 3.4vw, 34px); line-height: 1.15; margin: 0 0 8px; }
+  h3 { font-size: 19px; margin: 22px 0 6px; }
+  .num { font-family: Georgia, serif; color: var(--accent); font-weight: 700; font-size: 17px; margin: 0; }
+  .sub { color: var(--ink-2); font-size: 19px; margin: 0 0 18px; max-width: 46em; }
+  p, li { max-width: 46em; }
+  .intro { padding: 50px 0 10px; }
+  .lead { font-size: clamp(19px, 2.4vw, 23px); line-height: 1.45; color: var(--ink-2); margin: 0 0 22px; max-width: 40em; }
+  .claim { background: var(--surface); border-left: 5px solid var(--accent); border-radius: 0 10px 10px 0; padding: 16px 20px; margin: 20px 0; max-width: 52em; }
+  .claim b { color: var(--accent); }
+  .status { background: var(--warn-bg); border-radius: 8px; padding: 11px 16px; margin: 14px 0; font-size: 16px; max-width: 52em; }
+  .card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 18px; }
+  .card { background: var(--surface); border: 2px solid var(--c, var(--accent)); border-radius: 10px; padding: 16px 18px; }
+  .card h3 { margin: 0 0 4px; color: var(--c); font-size: 21px; }
+  .card .def { color: var(--ink-2); margin: 0 0 10px; }
+  .card dl { margin: 0; display: grid; grid-template-columns: 7.5em 1fr; gap: 6px 10px; font-size: 15.5px; }
+  .card dt { font-weight: 700; }
+  .card dd { margin: 0; }
+  .per { --c: var(--per); } .pol { --c: var(--pol); } .hw { --c: var(--hw); } .con { --c: var(--con); }
+  .tag { display: inline-block; font-size: 13px; font-weight: 700; padding: 1px 8px; border-radius: 99px; border: 1.5px solid var(--c); color: var(--c); white-space: nowrap; }
+  .phases { list-style: none; padding: 0; margin: 16px 0 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; max-width: none; }
+  .phases li { background: var(--surface); border: 1.5px solid var(--line); padding: 12px 12px 14px; position: relative; max-width: none; }
+  .phases li + li { border-left: 0; }
+  .phases b { display: block; font-size: 18px; color: var(--accent); }
+  .phases span { font-size: 14.5px; color: var(--ink-2); }
+  .table-wrap { overflow-x: auto; margin: 16px 0; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 15px; }
+  th, td { text-align: left; vertical-align: top; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  thead th { background: #14294d; color: #fff; font-weight: 700; position: sticky; top: 0; }
+  tbody tr:last-child td, tbody tr:last-child th { border-bottom: 0; }
+  tbody th { white-space: nowrap; }
+  td .seen { display: block; margin-top: 4px; font-size: 13.5px; color: var(--ink-2); font-style: italic; }
+  .matrix td { min-width: 165px; }
+  .yes { color: var(--con); font-weight: 700; }
+  .no { color: var(--per); font-weight: 700; }
+  .part { color: var(--warn); font-weight: 700; }
+  .stories { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 16px 0; }
+  .story { background: var(--surface); border-top: 5px solid var(--c); border-radius: 8px; padding: 12px 14px; font-size: 15.5px; }
+  .story b { color: var(--c); }
+  .reasons { counter-reset: r; list-style: none; padding: 0; }
+  .reasons li { counter-increment: r; position: relative; padding-left: 44px; margin: 0 0 14px; }
+  .reasons li::before { content: counter(r); position: absolute; left: 0; top: 1px; width: 30px; height: 30px; border-radius: 50%; background: var(--accent-fill); color: var(--accent); font-weight: 700; display: grid; place-items: center; font-family: Georgia, serif; }
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; }
+  .compare > div { background: var(--surface); border-radius: 10px; padding: 14px 18px; border: 1.5px solid var(--line); }
+  .compare .good { border-color: var(--accent); }
+  .compare h3 { margin-top: 0; }
+  figure { margin: 18px 0; }
+  figure img, figure video { width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--line); background: #fff; display: block; }
+  figcaption { font-size: 14.5px; color: var(--ink-2); margin-top: 6px; max-width: 52em; }
+  .two { display: grid; grid-template-columns: 1.15fr 1fr; gap: 20px; align-items: start; }
+  .pipeline { width: 100%; height: auto; display: block; margin: 12px 0; }
+  .pipeline text { font: 14px "Segoe UI", system-ui, sans-serif; fill: var(--ink); }
+  .pipeline .small { font-size: 12.5px; fill: var(--ink-2); }
+  .pipeline .node { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; }
+  .pipeline .gate { stroke-width: 2.2; fill: var(--surface); }
+  .pipeline .arr { stroke: var(--ink-2); stroke-width: 1.8; fill: none; }
+  .pipeline .head { fill: var(--ink-2); }
+  .footer { margin-top: 48px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--ink-2); font-size: 15px; }
+  .refs li { font-size: 14.5px; color: var(--ink-2); margin-bottom: 4px; }
+  @media (max-width: 860px) {
+    .card-grid, .compare, .two { grid-template-columns: 1fr; }
+    .stories { grid-template-columns: 1fr 1fr; }
+    .phases { grid-template-columns: 1fr; }
+    .phases li + li { border-left: 1.5px solid var(--line); border-top: 0; }
+  }
+  @media (max-width: 520px) { .stories { grid-template-columns: 1fr; } .card dl { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="#top">Robot Failure Attribution</a>
+    <nav aria-label="Pages">
+      <a href="index.html" aria-current="page">Why it is hard</a>
+      <a href="paper-RA-DP/index.html">RA-DP walkthrough</a>
+      <span class="soon" title="Page coming soon">Implementation (soon)</span>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+  <section class="intro">
+    <p class="num">For teams that build manipulator robots</p>
+    <h1>Your robot dropped the cup. Was it the camera, the policy, the motors or the cup?</h1>
+    <p class="lead">Every failure of a manipulator robot comes from one of four sources, and it can start in any of five phases of the task. Each source needs a different fix. Sending every failure back to annotation and retraining only fixes one of the four.</p>
+    <div class="claim"><b>The idea in one line:</b> diagnose each failure first, then send only the failures that really are policy mistakes to annotation and retraining. The rest go to the camera, actuator or contact fix they need, with no human labelling.</div>
+    <p>This page explains why the four sources are hard to separate, shows them with examples in every phase, uses results from a re-implementation of the RA-DP paper (Ye, Yang, Jin, Li and Rasouli, IROS 2025) to show one way to separate them, and proposes how to separate the one source that paper cannot: perception.</p>
+  </section>
+
+  <!-- 1 -->
+  <section id="chain">
+    <p class="num">1</p>
+    <h2>The four sources of a failure</h2>
+    <p class="sub">At every moment, the robot's loop passes through four steps. Any one of them can break.</p>
+    <svg class="pipeline" viewBox="0 0 1040 170" role="img" aria-label="The robot loop: the real world goes through perception to what the robot sees, through the policy to a command, through the hardware to the arm's motion, and through contact to what happens to the object.">
+      <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="head" d="M0 0L10 5L0 10z"/></marker></defs>
+      <rect class="node" x="4" y="50" width="150" height="56" rx="8"/><text x="79" y="76" text-anchor="middle">Real world</text><text class="small" x="79" y="94" text-anchor="middle">where the cup really is</text>
+      <rect class="node" x="300" y="50" width="150" height="56" rx="8"/><text x="375" y="76" text-anchor="middle">What it sees</text><text class="small" x="375" y="94" text-anchor="middle">estimated cup pose</text>
+      <rect class="node" x="596" y="50" width="150" height="56" rx="8"/><text x="671" y="76" text-anchor="middle">Command</text><text class="small" x="671" y="94" text-anchor="middle">joint targets</text>
+      <rect class="node" x="886" y="50" width="150" height="56" rx="8"/><text x="961" y="76" text-anchor="middle">Arm motion</text><text class="small" x="961" y="94" text-anchor="middle">real joints, real force</text>
+      <path class="arr" d="M154 78H296" marker-end="url(#ah)"/><path class="arr" d="M450 78H592" marker-end="url(#ah)"/><path class="arr" d="M746 78H882" marker-end="url(#ah)"/>
+      <rect class="gate" x="172" y="18" width="110" height="34" rx="17" style="stroke:var(--per)"/><text x="227" y="40" text-anchor="middle" style="fill:var(--per);font-weight:700">1 Perception</text>
+      <rect class="gate" x="468" y="18" width="110" height="34" rx="17" style="stroke:var(--pol)"/><text x="523" y="40" text-anchor="middle" style="fill:var(--pol);font-weight:700">2 Policy</text>
+      <rect class="gate" x="760" y="18" width="112" height="34" rx="17" style="stroke:var(--hw)"/><text x="816" y="40" text-anchor="middle" style="fill:var(--hw);font-weight:700">3 Hardware</text>
+      <path class="arr" d="M961 106V146H79V110" marker-end="url(#ah)"/>
+      <rect class="gate" x="456" y="129" width="128" height="34" rx="17" style="stroke:var(--con)"/><text x="520" y="151" text-anchor="middle" style="fill:var(--con);font-weight:700">4 Contact</text>
+    </svg>
+
+    <div class="card-grid">
+      <div class="card per">
+        <h3>1. Perception</h3>
+        <p class="def">The robot's picture of the world is wrong. What it sees is not what is there.</p>
+        <dl>
+          <dt>Example</dt><dd>The camera mount moved 3 mm after a bump. The robot now sees the cup 3 cm to the left of where it really is, and closes the gripper on air.</dd>
+          <dt>Typical causes</dt><dd>Calibration drift, glare, transparent or shiny objects, the arm blocking the camera, depth noise.</dd>
+          <dt>In the log</dt><dd>The policy's action is sensible <i>for what it saw</i>. Only an independent view of the cup shows the error.</dd>
+          <dt>Right fix</dt><dd>Recalibrate the camera, or fine-tune the perception model on real images. Not new demonstrations.</dd>
+        </dl>
+      </div>
+      <div class="card pol">
+        <h3>2. Policy</h3>
+        <p class="def">The robot saw the world correctly but chose the wrong action.</p>
+        <dl>
+          <dt>Example</dt><dd>The cup is in a corner of the table where no training demo started. The policy approaches from an odd angle and knocks the cup over.</dd>
+          <dt>Typical causes</dt><dd>States not covered by training data, small early errors that push the arm somewhere unfamiliar, opening the gripper too early.</dd>
+          <dt>In the log</dt><dd>The observation is clean, but a planner given the same observation would have acted differently.</dd>
+          <dt>Right fix</dt><dd>New demonstrations or corrections at these states, then retraining. <b>This is the only category retraining is meant for.</b></dd>
+        </dl>
+      </div>
+      <div class="card hw">
+        <h3>3. Hardware</h3>
+        <p class="def">The right command was sent, but the arm did not do it.</p>
+        <dl>
+          <dt>Example</dt><dd>A warm gripper servo delivers 60% of the commanded force. The grip is too weak and the cup slides out.</dd>
+          <dt>Typical causes</dt><dd>Servo latency, backlash, torque limits, overheating, gains different from the simulator.</dd>
+          <dt>In the log</dt><dd>Commanded and measured joint positions drift apart; the motor current sits at its limit.</dd>
+          <dt>Right fix</dt><dd>Maintenance, an actuator model or latency compensation. Retraining the policy cannot add torque to a motor.</dd>
+        </dl>
+      </div>
+      <div class="card con">
+        <h3>4. Contact physics</h3>
+        <p class="def">The arm did what was asked, but the object behaved differently from what the policy expected.</p>
+        <dl>
+          <dt>Example</dt><dd>The cup is wet, or full of water and twice as heavy as during training. The same grip that worked yesterday slips today.</dd>
+          <dt>Typical causes</dt><dd>Friction, mass, centre of mass, soft or deformable objects, worn gripper pads.</dd>
+          <dt>In the log</dt><dd>Force and motion match the command, yet the object slips, tips or rotates.</dd>
+          <dt>Right fix</dt><dd>New gripper pads, a measured friction and mass range in simulation, or a grip-force rule. Sometimes extra data helps; often it does not.</dd>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section id="phases">
+    <p class="num">2</p>
+    <h2>The five phases of a pick-and-place task</h2>
+    <p class="sub">A failure has two times: the phase where it <b>starts</b> and the phase where it is <b>seen</b>. They are often different.</p>
+    <ol class="phases">
+      <li><b>Reach</b><span>The arm moves to the object.</span></li>
+      <li><b>Grasp</b><span>The gripper closes on it.</span></li>
+      <li><b>Lift</b><span>The object leaves the table.</span></li>
+      <li><b>Move</b><span>The object is carried to the target.</span></li>
+      <li><b>Place</b><span>The object is put down and released.</span></li>
+    </ol>
+  </section>
+
+  <!-- 3 -->
+  <section id="matrix">
+    <p class="num">3</p>
+    <h2>Every category in every phase: 20 examples</h2>
+    <p class="sub">Picking up a cup and placing it on a shelf. Each cell is where the fault <b>starts</b>; the italic line is where a person watching the video would <b>see</b> it.</p>
+    <div class="table-wrap">
+      <table class="matrix">
+        <thead><tr><th scope="col">Starts as</th><th scope="col">Reach</th><th scope="col">Grasp</th><th scope="col">Lift</th><th scope="col">Move</th><th scope="col">Place</th></tr></thead>
+        <tbody>
+          <tr><th scope="row"><span class="tag per">Perception</span></th>
+            <td>Camera drift: cup seen 3 cm to the left. <span class="seen">Seen at Grasp: gripper closes on air.</span></td>
+            <td>Glare hides the handle; a poor grasp point is chosen. <span class="seen">Seen at Lift: cup tilts and slips.</span></td>
+            <td>The arm blocks the camera; the robot thinks the cup is still on the table and re-grasps. <span class="seen">Seen at Lift: jerky motion, cup knocked.</span></td>
+            <td>A glass on the path is invisible to depth. <span class="seen">Seen at Move: collision.</span></td>
+            <td>Shelf height wrong by 1 cm. <span class="seen">Seen at Place: cup dropped from above, or pushed into the shelf.</span></td></tr>
+          <tr><th scope="row"><span class="tag pol">Policy</span></th>
+            <td>Unfamiliar start pose; the arm approaches from the side. <span class="seen">Seen at Grasp: cup knocked over.</span></td>
+            <td>Gripper closes too early. <span class="seen">Seen at Lift: empty gripper.</span></td>
+            <td>Lifts before the grip settles. <span class="seen">Seen at Move: cup slides out.</span></td>
+            <td>Cluttered path never seen in training; passes too close to a box. <span class="seen">Seen at Move: collision.</span></td>
+            <td>Opens the gripper before the cup touches the shelf. <span class="seen">Seen at Place: cup tips over.</span></td></tr>
+          <tr><th scope="row"><span class="tag hw">Hardware</span></th>
+            <td>40 ms servo delay; the arm overshoots and nudges the cup. <span class="seen">Seen at Grasp: off-centre grip.</span></td>
+            <td>Gripper motor at a lower torque limit. <span class="seen">Seen at Move: cup slides out.</span></td>
+            <td>Shoulder joint saturates under load; the arm sags. <span class="seen">Seen at Lift: cup hits the table edge.</span></td>
+            <td>Wrist backlash; the cup swings. <span class="seen">Seen at Move: spill or drop.</span></td>
+            <td>Encoder drift; placed 1 cm off. <span class="seen">Seen at Place: cup on the shelf edge falls.</span></td></tr>
+          <tr><th scope="row"><span class="tag con">Contact</span></th>
+            <td>Cup lighter than in training; a finger brushes it and it slides away. <span class="seen">Seen at Grasp: nothing to grasp.</span></td>
+            <td>Wet cup; the fingers slide. <span class="seen">Seen at Lift: cup stays behind.</span></td>
+            <td>Cup full of water, twice the mass. <span class="seen">Seen at Lift or Move: slips out.</span></td>
+            <td>Water shifts the centre of mass; the cup rotates in the grip. <span class="seen">Seen at Move: drop.</span></td>
+            <td>Slippery shelf mat. <span class="seen">Seen at Place: cup slides and tips on release.</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Look down any column of italic lines: the same few symptoms appear again and again. "Cup slides out during Move" appears in three different rows. A video alone does not say which row you are in.</p>
+  </section>
+
+  <!-- 4 -->
+  <section id="hard">
+    <p class="num">4</p>
+    <h2>Why the four are hard to separate</h2>
+    <p class="sub">One symptom, four different stories. Here is the same failure, a cup sliding out of the gripper during Move, caused four different ways.</p>
+    <div class="stories">
+      <div class="story per"><b>Perception</b><br>At Grasp, the camera put the grasp point 2 cm off-centre. The off-centre grip twists the cup until it slips during Move.</div>
+      <div class="story pol"><b>Policy</b><br>At Grasp, the policy learned to close the gripper only partly. The grip is too loose for the carry.</div>
+      <div class="story hw"><b>Hardware</b><br>The command was a full grip, but a hot servo delivered 60% of the force.</div>
+      <div class="story con"><b>Contact</b><br>The grip was correct and strong, but today the cup is wet and heavier.</div>
+    </div>
+    <p>On video, all four look identical. An annotator watching the clip has no way to tell them apart, so a label like "bad grasp, collect more demos" is a guess three times out of four.</p>
+    <ol class="reasons">
+      <li><b>Same symptom, different causes.</b> A drop, a miss or a collision can come from any of the four categories, as the table above shows.</li>
+      <li><b>Delayed symptoms.</b> A fault that starts at Reach or Grasp is often only visible at Lift or Move. The phase where you see it is the wrong place to look.</li>
+      <li><b>Mixed causes.</b> A little camera noise plus a policy that is not robust to noise: fixing either one would have saved the run. Forcing a single label hides this.</li>
+      <li><b>The real world cannot be rewound.</b> The test you want, "would it have worked if only the camera had been right?", cannot be run on the real robot after the fact.</li>
+      <li><b>The truth is not in the log.</b> The robot logs what it <i>saw</i>, not where the cup really was. Without an independent measurement, a perception error is invisible: the log looks like a policy that made a strange choice.</li>
+    </ol>
+  </section>
+
+  <!-- 5 -->
+  <section id="retrain">
+    <p class="num">5</p>
+    <h2>Why retraining on all the failure data will not work</h2>
+    <p class="sub">The common response to failures is to label them, collect more demonstrations and retrain the policy. That only works for one category.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Category</th><th scope="col">Does retraining the policy fix it?</th><th scope="col">What goes wrong if you retrain anyway</th><th scope="col">The fix it actually needs</th></tr></thead>
+        <tbody>
+          <tr><th scope="row"><span class="tag per">Perception</span></th><td class="no">No</td><td>The policy learns to aim off-target to make up for a miscalibrated camera. It breaks again once the camera is fixed, or on the next robot.</td><td>Recalibrate, or fine-tune the perception model on real images.</td></tr>
+          <tr><th scope="row"><span class="tag pol">Policy</span></th><td class="yes">Yes</td><td>Nothing; this is what retraining is for.</td><td>Demonstrations or corrections at the failing states, then retraining.</td></tr>
+          <tr><th scope="row"><span class="tag hw">Hardware</span></th><td class="no">No</td><td>More demonstrations cannot add torque or remove latency. Effort goes into the wrong place while the arm keeps degrading.</td><td>Maintenance, an actuator model in the simulator, or latency compensation.</td></tr>
+          <tr><th scope="row"><span class="tag con">Contact</span></th><td class="part">Sometimes</td><td>Helps only if the training data covers the new friction or mass. Often a hardware change (pads) or a grip-force rule is faster and cheaper.</td><td>Measured friction and mass ranges in simulation, new pads, a grip-force rule.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="compare">
+      <div>
+        <h3>Today</h3>
+        <ul>
+          <li>Every failure clip goes to a person to watch and label.</li>
+          <li>Labels are guesses, because the cause is not visible.</li>
+          <li>All failures go into retraining, including those retraining cannot fix.</li>
+          <li>The same perception or hardware failures come back after the new model ships.</li>
+        </ul>
+      </div>
+      <div class="good">
+        <h3>With diagnosis first</h3>
+        <ul>
+          <li>Each failure is labelled automatically with a category, the phase where it started, and the evidence.</li>
+          <li>Only <b>policy</b> failures go to annotation and retraining.</li>
+          <li>Perception, hardware and contact failures go straight to the engineer who can fix them, with no labelling hours spent.</li>
+          <li>The share of failures per category tells you where the next engineering week should go.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section id="radp">
+    <p class="num">6</p>
+    <h2>Evidence: what the RA-DP results show</h2>
+    <p class="sub">RA-DP (Rapid Adaptive Diffusion Policy, IROS 2025) replans at every control step instead of running a chunk of actions blind. I re-implemented it from the paper and tested it against faults of each category, switched on during one phase at a time.</p>
+    <div class="status"><b>Set-up:</b> MetaWorld pick-place in simulation, 30 seeds, about 23 successful episodes per cell. Score = share of normally successful episodes that still succeed with the fault on. A 4-point difference is one episode. A full walkthrough of the paper is on the <a href="paper-RA-DP/index.html">RA-DP walkthrough page</a>.</div>
+    <figure>
+      <img src="assets/fig_faults.png" alt="Two heat maps of success kept under fault, for plain diffusion policy (DP) and RA-DP, rows perception, policy, hardware, contact; columns reach, grasp, lift, move, place. Perception at reach: DP 13%, RA-DP 8%. Policy at reach: 26% and 29%. Hardware: DP 87 to 100%, RA-DP 96 to 100%. Contact: 96 to 100% for both.">
+      <figcaption>Success kept under each fault, by phase. Left: plain diffusion policy (DP). Right: RA-DP.</figcaption>
+    </figure>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Fault (DP / RA-DP)</th><th scope="col">Reach</th><th scope="col">Grasp</th><th scope="col">Lift</th><th scope="col">Move</th><th scope="col">Place</th></tr></thead>
+        <tbody>
+          <tr><th scope="row"><span class="tag per">Perception</span> object seen 3 cm off</th><td>13 / 8</td><td>100 / 92</td><td>100 / 100</td><td>100 / 100</td><td>100 / 100</td></tr>
+          <tr><th scope="row"><span class="tag pol">Policy</span> noisy actions</th><td>26 / 29</td><td>87 / 88</td><td>91 / 100</td><td>95 / 100</td><td>96 / 96</td></tr>
+          <tr><th scope="row"><span class="tag hw">Hardware</span> 4-step lag, half motion</th><td>91 / <b>100</b></td><td>87 / <b>96</b></td><td>91 / <b>100</b></td><td>95 / <b>100</b></td><td>100 / 100</td></tr>
+          <tr><th scope="row"><span class="tag con">Contact</span> friction ×0.05, mass ×5</th><td>100 / 100</td><td>96 / 100</td><td>100 / 100</td><td>100 / 100</td><td>96 / 100</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>One way to separate the categories: the replanning test</h3>
+    <div class="two">
+      <div>
+        <p>Fast replanning corrects <b>execution</b> errors. When the arm lags or moves less than commanded, RA-DP sees the result at the next step and corrects it. It never fell below 96% under hardware faults, while plain DP fell to 87–91%.</p>
+        <p>Fast replanning cannot correct <b>wrong inputs or wrong decisions</b>. With a perception fault at Reach, both policies fell to about 10%: they replan perfectly, towards the wrong place.</p>
+        <p>This gives a diagnostic test. Replay a failed episode in simulation with a fast-replanning policy. <b>If it recovers, the cause was in execution (hardware).</b> If it does not, the cause was before the command: perception or policy.</p>
+      </div>
+      <figure>
+        <video src="assets/reach_static_seed6.mp4" poster="assets/reach_static_seed6_last.png" controls muted playsinline preload="none"></video>
+        <figcaption>The paper's main test, from the re-implementation: DP and Guided-DP hit the obstacle; RA-DP replans around it.</figcaption>
+      </figure>
+    </div>
+
+    <h3>What this test cannot separate</h3>
+    <div class="claim" style="border-color:var(--per)"><b style="color:var(--per)">Perception and policy look the same to it.</b> At Reach, a perception fault (13% / 8%) and a policy fault (26% / 29%) both defeat replanning. In both cases the robot acts confidently on a wrong plan. The replanning test says "not hardware", but not which of the two. Contact also remained untested: MetaWorld's gripper holds so firmly that even friction ×0.05 and mass ×5 made almost no difference.</div>
+    <p>The perception result is also the most damaging one: a 3 cm error during Reach removed about 90% of successes, and no policy improvement helped. This is exactly the case where a company would retrain on more data and see no gain.</p>
+  </section>
+
+  <!-- 7 -->
+  <section id="proposal">
+    <p class="num">7</p>
+    <h2>The proposal: diagnose, then fix</h2>
+    <p class="sub">A set of tests, each built to answer one question, with a vision-language model (VLM) as the reasoning engine that combines them into one diagnosis.</p>
+
+    <svg class="pipeline" viewBox="0 0 1040 250" role="img" aria-label="A failed episode, with video and logs, goes to five tests: tracking check, replanning test, perception check, same-observation planner, and contact replay. Their results go to the VLM reasoning engine, which outputs a category, the starting phase and the evidence. Policy failures go to annotation and retraining; the other categories go to their own fixes.">
+      <defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="head" d="M0 0L10 5L0 10z"/></marker></defs>
+      <rect class="node" x="4" y="96" width="140" height="58" rx="8"/><text x="74" y="121" text-anchor="middle">Failed episode</text><text class="small" x="74" y="139" text-anchor="middle">video + robot logs</text>
+      <g>
+        <rect class="gate" x="200" y="6" width="220" height="36" rx="8" style="stroke:var(--hw)"/><text x="310" y="29" text-anchor="middle">A. Tracking check</text>
+        <rect class="gate" x="200" y="54" width="220" height="36" rx="8" style="stroke:var(--hw)"/><text x="310" y="77" text-anchor="middle">B. Replanning test (RA-DP)</text>
+        <rect class="gate" x="200" y="102" width="220" height="36" rx="8" style="stroke:var(--per);stroke-dasharray:6 4"/><text x="310" y="125" text-anchor="middle">C. Perception check (new)</text>
+        <rect class="gate" x="200" y="150" width="220" height="36" rx="8" style="stroke:var(--pol)"/><text x="310" y="173" text-anchor="middle">D. Same-observation planner</text>
+        <rect class="gate" x="200" y="198" width="220" height="36" rx="8" style="stroke:var(--con)"/><text x="310" y="221" text-anchor="middle">E. Contact replay</text>
+      </g>
+      <path class="arr" d="M144 125H172M172 24V216M172 24H196M172 72H196M172 120H196M172 168H196M172 216H196"/>
+      <path class="arr" d="M420 24H450M420 72H450M420 120H450M420 168H450M420 216H450M450 24V216M450 125H486" marker-end="url(#ah2)"/>
+      <rect class="node" x="490" y="88" width="190" height="74" rx="8" style="stroke:var(--accent);stroke-width:2.2"/><text x="585" y="116" text-anchor="middle" style="font-weight:700">VLM reasoning</text><text class="small" x="585" y="135" text-anchor="middle">category + start phase</text><text class="small" x="585" y="151" text-anchor="middle">+ evidence, or "unexplained"</text>
+      <path class="arr" d="M680 125H720M720 40V210M720 40H760M720 96H760M720 152H760M720 210H760"/>
+      <rect class="node" x="764" y="22" width="272" height="36" rx="8"/><text x="900" y="45" text-anchor="middle"><tspan style="fill:var(--pol);font-weight:700">Policy</tspan> → annotate + retrain</text>
+      <rect class="node" x="764" y="78" width="272" height="36" rx="8"/><text x="900" y="101" text-anchor="middle"><tspan style="fill:var(--per);font-weight:700">Perception</tspan> → recalibrate / fine-tune</text>
+      <rect class="node" x="764" y="134" width="272" height="36" rx="8"/><text x="900" y="157" text-anchor="middle"><tspan style="fill:var(--hw);font-weight:700">Hardware</tspan> → actuator fix</text>
+      <rect class="node" x="764" y="192" width="272" height="36" rx="8"/><text x="900" y="215" text-anchor="middle"><tspan style="fill:var(--con);font-weight:700">Contact</tspan> → friction / pads</text>
+    </svg>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Test</th><th scope="col">The question it answers</th><th scope="col">How</th><th scope="col">Points to</th><th scope="col">Status</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">A. Tracking check</th><td>Did the arm do what it was told?</td><td>Compare commanded and measured joints; look for delay, current at its limit, temperature.</td><td><span class="tag hw">Hardware</span></td><td>Simple rule on existing logs</td></tr>
+          <tr><th scope="row">B. Replanning test</th><td>Would correcting every step have saved it?</td><td>Replay the episode in a calibrated simulation copy (a "digital twin") with an RA-DP-style policy.</td><td>Recovers → <span class="tag hw">Hardware</span>; fails → perception or policy</td><td>Shown in simulation (section 6)</td></tr>
+          <tr><th scope="row">C. Perception check</th><td>Was what the robot saw wrong?</td><td>Compare the robot's estimate with an independent one, and replay with the estimate corrected (section 8).</td><td><span class="tag per">Perception</span></td><td>Proposed: new direction</td></tr>
+          <tr><th scope="row">D. Same-observation planner</th><td>With the same view, was a better action possible?</td><td>A planner that sees exactly what the policy saw. If it succeeds, the policy was at fault. If it also fails, the view itself was not good enough.</td><td>Succeeds → <span class="tag pol">Policy</span>; fails → <span class="tag per">Perception</span></td><td>Proposed</td></tr>
+          <tr><th scope="row">E. Contact replay</th><td>Would normal friction and mass have saved it?</td><td>Replay in the twin with the object's friction and mass set back to normal values.</td><td><span class="tag con">Contact</span></td><td>Proposed</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Why a VLM as the reasoning engine</h3>
+    <p>No single test is enough, and the results can disagree. A vision-language model reads the video keyframes, the robot logs as text, and the result of each test, then writes the diagnosis: the category, the phase where the fault started, the phase where it was seen, and a short explanation an engineer can check. When the causes are mixed it says so, and when the twin cannot reproduce the episode it answers "unexplained" instead of guessing.</p>
+    <p>The VLM can be trained without human-written explanations. In simulation and with deliberately injected faults the true cause is known, so the reward is simply whether its answer matches (reinforcement learning with verifiable rewards). Once trained, it can give a first diagnosis from the video and logs alone, and the slower replay tests are run only when it is unsure.</p>
+    <p>The earlier version of this work found root causes in robot logs with causal discovery (PCMCI+): 87% correct on 270 simulated Go2 incidents. That method finds <i>which signal went wrong first</i>. The VLM version adds <i>which part of the robot</i> it belongs to, which is what decides the fix.</p>
+  </section>
+
+  <!-- 8 -->
+  <section id="perception">
+    <p class="num">8</p>
+    <h2>New research direction: separating perception</h2>
+    <p class="sub">The replanning test cannot tell perception from policy. The main reason is in reason 5 above: the log records what the robot saw, never where the object really was. So the plan is to measure that second thing.</p>
+    <div class="card-grid">
+      <div class="card per">
+        <h3>Signal 1: a second opinion</h3>
+        <p class="def">An independent estimate of where the object really is.</p>
+        <dl>
+          <dt>How</dt><dd>A second calibrated camera, a fiducial tag during testing, or the robot's own body: when the fingers touch the cup, the joint angles say where the cup is, without any camera.</dd>
+          <dt>Decision</dt><dd>If the robot's estimate and the independent one disagree by more than a set margin before the failure, perception is a suspect.</dd>
+        </dl>
+      </div>
+      <div class="card per">
+        <h3>Signal 2: corrected replay</h3>
+        <p class="def">Would it have worked if the robot had seen correctly?</p>
+        <dl>
+          <dt>How</dt><dd>Replay the episode in the twin, feeding the policy the corrected object pose from the moment the disagreement starts.</dd>
+          <dt>Decision</dt><dd>If the corrected replay succeeds and the original replay fails, the failure is labelled perception, with the phase where it started.</dd>
+        </dl>
+      </div>
+      <div class="card pol">
+        <h3>Signal 3: same-view planner</h3>
+        <p class="def">Separates "saw wrong" from "chose wrong".</p>
+        <dl>
+          <dt>How</dt><dd>A planner sees only the policy's own (possibly wrong) view and plans with the twin's physics.</dd>
+          <dt>Decision</dt><dd>If the planner succeeds, a good action existed for that view: <b>policy</b>. If it fails too, the view itself was the problem: <b>perception</b>.</dd>
+        </dl>
+      </div>
+      <div class="card per">
+        <h3>Signal 4: how sure the camera is</h3>
+        <p class="def">A calibrated uncertainty on every pose estimate.</p>
+        <dl>
+          <dt>How</dt><dd>Conformal prediction gives each object pose an error bound with a stated coverage, learned from a small calibration set.</dd>
+          <dt>Decision</dt><dd>Failures that follow a wide bound (glare, occlusion, transparent objects) are flagged as likely perception, before any replay is run.</dd>
+        </dl>
+      </div>
+    </div>
+    <h3>Early evidence that this matters</h3>
+    <ul>
+      <li>In the RA-DP tests, a 3 cm perception error during Reach removed about 90% of successes, and fast replanning did not help.</li>
+      <li>In the same re-implementation, a simulated colour-plus-depth camera located obstacles within 3–7 mm when they were in clear view. When the arm blocked the view, the estimate shrank and shifted by 2–3 cm. That is a real perception gap that appears only in some phases, which is exactly what makes it hard to find from video.</li>
+    </ul>
+    <h3>How it would be tested</h3>
+    <p>On a low-cost real arm, each category is injected on purpose in each phase: shift or smear the camera (perception), unusual start poses (policy), lower the servo torque limit or add delay (hardware), tape the fingertips or add hidden mass (contact). Because the cause is known, the diagnosis can be scored on real failures, not only in simulation, as accuracy over the 20 category-by-phase classes.</p>
+  </section>
+
+  <!-- 9 -->
+  <section id="status">
+    <p class="num">9</p>
+    <h2>What exists today, and what is next</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Part</th><th scope="col">Status</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">RA-DP re-implementation</th><td>Done, in simulation. Results close to the paper (static obstacle: 71.7% vs the paper's 63.3%; about 10× faster replanning than plain DP).</td></tr>
+          <tr><th scope="row">4 categories × 5 phases fault tests</th><td>Done in MetaWorld simulation (section 6). The contact fault needs a stronger test.</td></tr>
+          <tr><th scope="row">Root-cause finder from logs (PCMCI+)</th><td>Done in simulation on a Go2 robot: 87% correct on 270 incidents.</td></tr>
+          <tr><th scope="row">VLM reasoning engine</th><td>In progress.</td></tr>
+          <tr><th scope="row">Perception separation (section 8)</th><td>Proposed. Next step.</td></tr>
+          <tr><th scope="row">Real-robot validation with injected faults</th><td>Planned.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="claim"><b>For robot companies:</b> if your team spends hours labelling failure videos before every retraining round, I would like to test this on your failure logs. Even a few dozen logged failures with video and joint data are enough to show which categories they fall into.</div>
+  </section>
+
+  <section id="refs">
+    <h2 style="font-size:24px">References</h2>
+    <ul class="refs">
+      <li>X. Ye, R. H. Yang, J. Jin, Y. Li, A. Rasouli. RA-DP: Rapid Adaptive Diffusion Policy for Training-Free High-frequency Robotics Replanning. IROS 2025, arXiv:2503.04051. (Independently re-implemented here; no official code was released.)</li>
+      <li>P. Huang et al. What Went Wrong? Closing the Sim-to-Real Gap via Differentiable Causal Discovery. CoRL 2023.</li>
+      <li>Z. Liu, A. Bahety, S. Song. REFLECT: Summarizing Robot Experiences for Failure Explanation and Correction. CoRL 2023.</li>
+      <li>J. Duan et al. AHA: A Vision-Language-Model for Detecting and Reasoning over Failures in Robotic Manipulation. 2024.</li>
+      <li>J. Runge. Discovering contemporaneous and lagged causal relations in autocorrelated nonlinear time series datasets (PCMCI+). UAI 2020.</li>
+      <li>J. Pearl. Causality: Models, Reasoning and Inference, 2nd ed. Cambridge University Press, 2009.</li>
+    </ul>
+  </section>
+
+  <footer class="footer">
+    Shuja Abidi · AI and Robotics · <a href="https://syedabidi2020.github.io/ShujaAbidi/">syedabidi2020.github.io/ShujaAbidi</a><br>
+    The RA-DP results on this page come from an independent re-implementation, not from the paper's authors.
+  </footer>
+</main>
+</body>
+</html>
